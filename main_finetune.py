@@ -239,7 +239,7 @@ def main(args):
                 dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=False)
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-        
+
         data_loader_train = torch.utils.data.DataLoader(
             dataset_train, sampler=sampler_train,
             batch_size=args.batch_size,
@@ -467,7 +467,7 @@ def main(args):
                         loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
 
             if max_accuracy is not None:
-                print(f'Max accuracy: {max_accuracy:.2%}')
+            print(f'Max accuracy: {max_accuracy:.2%}')
 
             if log_writer is not None:
                 log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)

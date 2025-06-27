@@ -243,7 +243,7 @@ class TrainDataset(Dataset):
         sample = self.data_list[index]
         image_path, targets = sample['image_path'], sample['label']
         image = Image.open(image_path).convert('RGB')  # 打开图片并转为RGB
-        
+
         image_aug = self.transform(image)      # For ResNet branch
         image_dino = self.transform_dino(image) # For DINO branch
 
