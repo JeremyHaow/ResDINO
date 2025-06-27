@@ -9,6 +9,7 @@
 import os
 import math
 import time
+import argparse
 from collections import defaultdict, deque
 import datetime
 import numpy as np
@@ -216,11 +217,14 @@ class SwanlabLogger(object):
         except ImportError:
             raise ImportError("Please install swanlab: pip install swanlab")
         
-        self.writer = swanlab.init(
-            project=args.project_name if hasattr(args, 'project_name') else 'SAFE',
-            experiment_name=args.run_name if hasattr(args, 'run_name') else None,
-            config=args,
-        )
+        init_config = {
+            "project": args.project_name if hasattr(args, 'project_name') else 'SAFE',
+            "config": args,
+        }
+        if hasattr(args, 'run_name') and args.run_name is not None:
+            init_config['experiment_name'] = args.run_name
+        
+        self.writer = swanlab.init(**init_config)
         self.step = 0
 
     def set_step(self, step=None):
@@ -239,7 +243,8 @@ class SwanlabLogger(object):
             assert isinstance(v, (float, int))
             log_dict[f"{head}/{k}"] = v
         
-        self.writer.log(log_dict, step=self.step if step is None else step)
+        if self.writer:
+            self.writer.log(log_dict, step=self.step if step is None else step)
 
     def flush(self):
         # Swanlab does not have a flush method, logging is usually real-time

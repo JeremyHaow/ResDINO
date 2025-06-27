@@ -27,7 +27,7 @@ do
     do
 
         current_time=$(date +"%Y%m%d_%H%M%S")
-        RUN_NAME="Frequency-Decoupled_Dino-ResNet50_${current_time}"
+        RUN_NAME="${MODEL}_${current_time}"
         OUTPUT_PATH="results/$MODEL/$RUN_NAME"
         mkdir -p $OUTPUT_PATH
 

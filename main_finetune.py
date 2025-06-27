@@ -207,6 +207,14 @@ def main(args):
     num_tasks = utils.get_world_size()
     global_rank = utils.get_rank()
 
+    log_writer = None
+    if global_rank == 0:
+        if args.use_swanlab:
+            log_writer = utils.SwanlabLogger(args=args)
+        elif args.log_dir is not None and not args.eval:
+            os.makedirs(args.log_dir, exist_ok=True)
+            log_writer = utils.TensorboardLogger(log_dir=args.log_dir)
+
     # Init Train & Test Datasets
     if not args.eval:
 
@@ -232,14 +240,6 @@ def main(args):
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
         
-        log_writer = None
-        if global_rank == 0 and not args.eval:
-            if args.log_dir is not None:
-                os.makedirs(args.log_dir, exist_ok=True)
-                log_writer = utils.TensorboardLogger(log_dir=args.log_dir)
-            if args.use_swanlab:
-                log_writer = utils.SwanlabLogger(args=args)
-
         data_loader_train = torch.utils.data.DataLoader(
             dataset_train, sampler=sampler_train,
             batch_size=args.batch_size,
@@ -395,6 +395,14 @@ def main(args):
             print("***********************************")
     
             rows.append([val, acc * 100, ap * 100])
+
+            if log_writer is not None:
+                log_writer.update(
+                    eval_acc=acc,
+                    eval_ap=ap,
+                    eval_loss=test_stats['loss'],
+                    head=f"eval_on_{val}"
+                )
 
         def calculate_column_means(rows):
             if not rows or len(rows[0]) < 2:
