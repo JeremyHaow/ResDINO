@@ -14,7 +14,7 @@ DISTRIBUTED_ARGS="
 
 MODEL="DINOv2"
 RESUME_PATH="./results/DINOv2/Frequency-Decoupled_Dino-ResNet50_20250626_111300"
-CHECKPOINT_FILE="checkpoint-59.pth"
+CHECKPOINT_FILE="checkpoint-29.pth"
 
 eval_datasets=(
     "/home/jqsj/hqs/data/dataset/UniversalFakeDetect/test" \

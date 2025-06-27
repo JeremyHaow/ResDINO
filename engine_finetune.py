@@ -7,25 +7,32 @@
 
 import os, pdb
 import math
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Dict, Tuple
 
 import torch
 import torch.distributed as dist
+from torch.cuda.amp import autocast
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
 
 import utils
-from utils import adjust_learning_rate
+from utils import adjust_learning_rate, NativeScalerWithGradNormCount as NativeScaler
 from scipy.special import softmax
 from sklearn.metrics import (
     average_precision_score, 
-    accuracy_score
+    accuracy_score,
+    log_loss,
+    roc_auc_score,
+    precision_recall_curve,
+    auc,
 )
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
+                    device: torch.device, epoch: int, loss_scaler,
+                    lr_schedule: list, num_training_steps_per_epoch: int,
+                    max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None, 
                     log_writer=None, args=None):
     model.train(True)
@@ -33,20 +40,35 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
 
-    update_freq = args.update_freq
-    use_amp = args.use_amp
+    update_freq = args.update_freq if args is not None else 1
+    use_amp = args.use_amp if args is not None else False
     optimizer.zero_grad()
 
     for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq=100, header=header)):
 
+        step = data_iter_step // update_freq
+        if step >= num_training_steps_per_epoch:
+            continue
+        
         # we use a per iteration (instead of per epoch) lr scheduler
-        if data_iter_step % update_freq == 0:
-            adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+        if step % update_freq == 0:
+            # Assign learning rate
+            global_step = epoch * num_training_steps_per_epoch + step
+            for i, param_group in enumerate(optimizer.param_groups):
+                param_group["lr"] = lr_schedule[global_step]
+        
+        # Handle tuple of images
+        if isinstance(samples, (list, tuple)):
+            # The custom model architecture with dual inputs does not support mixup
+            if mixup_fn is not None:
+                raise ValueError("Mixup is not supported for models with dual-image inputs.")
+            samples = [s.to(device, non_blocking=True) for s in samples]
+        else:
+            samples = samples.to(device, non_blocking=True)
 
-        samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
-        if mixup_fn is not None:
+        if mixup_fn is not None and not isinstance(samples, list):
             samples, targets = mixup_fn(samples, targets)
 
         if use_amp:
@@ -125,7 +147,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device, val=None, use_amp=False):
+def evaluate(data_loader, model, device, val=None, use_amp=False) -> Tuple[Dict[str, float], float, float]:
     criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -133,54 +155,53 @@ def evaluate(data_loader, model, device, val=None, use_amp=False):
 
     # switch to evaluation mode
     model.eval()
+    all_targets = []
+    all_probs = []
 
-    for index, batch in enumerate(metric_logger.log_every(data_loader, 1000, header)):
+    for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
         target = batch[-1]
 
-        images = images.to(device, non_blocking=True)
+        # Handle tuple of images
+        if isinstance(images, (list, tuple)):
+            images_for_size = images[0]
+            images = [img.to(device, non_blocking=True) for img in images]
+        else:
+            images_for_size = images
+            images = images.to(device, non_blocking=True)
+            
         target = target.to(device, non_blocking=True)
 
         # compute output
-        if use_amp:
-            with torch.cuda.amp.autocast():
-                output = model(images)
-                if isinstance(output, dict):
-                    output = output['logits']
-                loss = criterion(output, target)
-        else:
-            output = model(images) #[bs, num_cls]
-            if isinstance(output, dict):
-                output = output['logits']
-            
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            output = model(images)
             loss = criterion(output, target)
-        
-        if index == 0:
-            predictions = output
-            labels = target
-        else:
-            predictions = torch.cat((predictions, output), 0)
-            labels = torch.cat((labels, target), 0)
+
+        all_probs.append(output)
+        all_targets.append(target)
 
         torch.cuda.synchronize()
 
-        acc1, _ = [acc / 100 for acc in accuracy(output, target, topk=(1, 2))]
+        acc1, _ = accuracy(output, target, topk=(1, 2))
 
-        batch_size = images.shape[0]
+        batch_size = images_for_size.shape[0]
         metric_logger.update(loss=loss.item())
-        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
+        metric_logger.meters['acc1'].update(acc1.item() / 100.0, n=batch_size)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print('* Acc@1 {top1.global_avg:.2%} loss {losses.global_avg:.4f}'
           .format(top1=metric_logger.acc1, losses=metric_logger.loss))
 
-    output_ddp = [torch.zeros_like(predictions) for _ in range(utils.get_world_size())]
-    dist.all_gather(output_ddp, predictions)
-    labels_ddp = [torch.zeros_like(labels) for _ in range(utils.get_world_size())]
-    dist.all_gather(labels_ddp, labels)
+    all_probs = torch.cat(all_probs)
+    all_targets = torch.cat(all_targets)
 
-    output_all = torch.concat(output_ddp, dim=0)
-    labels_all = torch.concat(labels_ddp, dim=0)
+    output_ddp = [torch.zeros_like(all_probs) for _ in range(utils.get_world_size())]
+    dist.all_gather(output_ddp, all_probs)
+    labels_ddp = [torch.zeros_like(all_targets) for _ in range(utils.get_world_size())]
+    dist.all_gather(labels_ddp, all_targets)
+
+    output_all = torch.cat(output_ddp, dim=0)
+    labels_all = torch.cat(labels_ddp, dim=0)
 
     y_pred = softmax(output_all.detach().cpu().numpy(), axis=1)[:, 1]
     y_true = labels_all.detach().cpu().numpy()
@@ -189,4 +210,4 @@ def evaluate(data_loader, model, device, val=None, use_amp=False):
     acc = accuracy_score(y_true, y_pred > 0.5)
     ap = average_precision_score(y_true, y_pred)
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, acc, ap
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, float(acc), float(ap)

@@ -171,7 +171,15 @@ def Get_Transforms(args):
         transform_eval.append(RandomMask(ratio=args.mask_ratio, patch_size=args.mask_patch_size, p=1.0))  # 测试时可加遮挡
     # endregion
 
-    return transforms.Compose(transform_train), transforms.Compose(transform_eval)  # 返回组合后的变换
+    # --- DINO Transform (minimal augmentation) ---
+    dino_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transform_dino = transforms.Compose([
+        transforms.Resize([size, size], interpolation=InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        dino_norm,
+    ])
+
+    return transforms.Compose(transform_train), transforms.Compose(transform_eval), transform_dino
 
 
 class TrainDataset(Dataset):
@@ -181,8 +189,8 @@ class TrainDataset(Dataset):
         # is_train: 是否为训练集
         # args: 参数对象
 
-        TRANSFORM = Get_Transforms(args)  # 获取变换
-        self.transform = TRANSFORM[0] if is_train else TRANSFORM[1]  # 选择训练或评估变换
+        transform_train, transform_eval, self.transform_dino = Get_Transforms(args)
+        self.transform = transform_train if is_train else transform_eval
         root = args.data_path if is_train else args.eval_data_path  # 数据路径
 
         dataset_list = root.replace(' ', '').split(',')  # 支持多个数据集路径
@@ -235,6 +243,8 @@ class TrainDataset(Dataset):
         sample = self.data_list[index]
         image_path, targets = sample['image_path'], sample['label']
         image = Image.open(image_path).convert('RGB')  # 打开图片并转为RGB
-        image = self.transform(image)  # 应用变换
+        
+        image_aug = self.transform(image)      # For ResNet branch
+        image_dino = self.transform_dino(image) # For DINO branch
 
-        return image, torch.tensor(int(targets))  # 返回图片张量和标签
+        return (image_aug, image_dino), torch.tensor(int(targets))  # 返回图片张量和标签

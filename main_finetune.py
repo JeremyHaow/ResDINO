@@ -231,7 +231,7 @@ def main(args):
             dataset_val = TrainDataset(is_train=False, args=args)
 
         if args.dist_eval:
-            if len(dataset_val) % num_tasks != 0:
+            if dataset_val is not None and len(dataset_val) % num_tasks != 0:
                 print('Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
                         'This will slightly alter validation results as extra duplicate entries are added to achieve '
                         'equal num of samples per-process.')
@@ -325,7 +325,7 @@ def main(args):
         print("Assigned values = %s" % str(assigner.values))
     
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
 
     optimizer = create_optimizer(
@@ -343,6 +343,13 @@ def main(args):
         criterion = torch.nn.CrossEntropyLoss()
     
     print("criterion = %s" % str(criterion))
+
+    if not args.eval:
+        print(f"Creating LR scheduler for {args.epochs} epochs")
+        lr_schedule = list(utils.cosine_scheduler(
+            args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch,
+            warmup_epochs=args.warmup_epochs,
+        ))
 
     utils.auto_load_model(
         args=args, model=model, model_without_ddp=model_without_ddp,
@@ -430,12 +437,14 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         if log_writer is not None:
-            log_writer.set_step(epoch * num_training_steps_per_epoch * args.update_freq)
+            log_writer.set_step(epoch * num_training_steps_per_epoch)
+        
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler, 
+            lr_schedule, num_training_steps_per_epoch,
             args.clip_grad, model_ema, mixup_fn,
-            log_writer=log_writer, args=args, 
+            log_writer=log_writer, args=args
         )
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
@@ -446,15 +455,19 @@ def main(args):
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch='last', model_ema=model_ema)
         if data_loader_val is not None:
+            assert dataset_val is not None
             test_stats = evaluate(data_loader_val, model, device, use_amp=args.use_amp)[0]
             print(f"Accuracy of the model on the {len(dataset_val)} test images: {test_stats['acc1']:.2%}")
-            if max_accuracy < test_stats["acc1"]:
+            
+            if max_accuracy is None or max_accuracy < test_stats["acc1"]:
                 max_accuracy = test_stats["acc1"]
                 if args.output_dir and args.save_ckpt:
                     utils.save_model(
                         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                         loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
-            print(f'Max accuracy: {max_accuracy:.2%}')
+
+            if max_accuracy is not None:
+                print(f'Max accuracy: {max_accuracy:.2%}')
 
             if log_writer is not None:
                 log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)
@@ -468,6 +481,8 @@ def main(args):
             
             # repeat testing routines for EMA, if ema eval is turned on
             if args.model_ema and args.model_ema_eval:
+                assert model_ema is not None
+                assert dataset_val is not None
                 test_stats_ema = evaluate(data_loader_val, model_ema.ema, device, use_amp=args.use_amp)[0]
 
                 print(f"Accuracy of the model EMA on {len(dataset_val)} test images: {test_stats_ema['acc1']:.2%}")
