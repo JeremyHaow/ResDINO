@@ -13,8 +13,8 @@ DISTRIBUTED_ARGS="
 "
 
 MODEL="DINOv2"
-RESUME_PATH="./results/DINOv2/Frequency-Decoupled_Dino-ResNet50_20250626_111300"
-CHECKPOINT_FILE="checkpoint-29.pth"
+RESUME_PATH="./results/DINOv2/Wavelet_driven_Fusion_Network_20250628_183733"
+CHECKPOINT_FILE="checkpoint-best.pth"
 
 eval_datasets=(
     "/home/jqsj/hqs/data/dataset/UniversalFakeDetect/test" \
@@ -36,7 +36,7 @@ do
         --output_dir "$RESUME_PATH/eval_results" \
         --resume "$RESUME_PATH/$CHECKPOINT_FILE" \
         --use_swanlab \
-        --project_name "SAFE_dino_resnet_experiments" \
+        --project_name "DINO_RESNET_EMA" \
         --run_name "eval_${CHECKPOINT_NAME}_${DATASET_NAME}" \
         --eval True
 done

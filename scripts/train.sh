@@ -20,6 +20,8 @@ eval_datasets=(
 )
 
 MODEL="DINOv2"
+RESUME_PATH="./results/DINOv2/Wavelet_driven_Fusion_Network_20250627_180442"
+CHECKPOINT_FILE="checkpoint-29.pth"
 
 for train_dataset in "${train_datasets[@]}" 
 do
@@ -42,9 +44,10 @@ do
             --blr 1e-3 \
             --weight_decay 0.01 \
             --warmup_epochs 2 \
-            --epochs 30 \
+            --epochs 50 \
             --num_workers 16 \
             --output_dir $OUTPUT_PATH \
+            --resume "$RESUME_PATH/$CHECKPOINT_FILE" \
             --use_swanlab \
             --project_name "DINO_RESNET_EMA" \
             --run_name "$RUN_NAME" \

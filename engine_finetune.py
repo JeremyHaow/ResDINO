@@ -64,7 +64,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 raise ValueError("Mixup is not supported for models with dual-image inputs.")
             samples = [s.to(device, non_blocking=True) for s in samples]
         else:
-        samples = samples.to(device, non_blocking=True)
+            samples = samples.to(device, non_blocking=True)
 
         targets = targets.to(device, non_blocking=True)
 
@@ -168,13 +168,13 @@ def evaluate(data_loader, model, device, val=None, use_amp=False) -> Tuple[Dict[
             images = [img.to(device, non_blocking=True) for img in images]
         else:
             images_for_size = images
-        images = images.to(device, non_blocking=True)
+            images = images.to(device, non_blocking=True)
             
         target = target.to(device, non_blocking=True)
 
         # compute output
         with torch.cuda.amp.autocast(enabled=use_amp):
-                output = model(images)
+            output = model(images)
             loss = criterion(output, target)
         
         all_probs.append(output)

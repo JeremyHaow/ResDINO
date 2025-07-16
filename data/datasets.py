@@ -8,6 +8,7 @@
 import io, os, pdb  # 导入io用于内存流操作，os用于文件操作，pdb用于调试
 import cv2, math, random  # 导入cv2用于图像处理，math用于数学运算，random用于随机数生成
 import numpy as np  # 导入numpy用于数值计算
+from typing import Union, Tuple # 导入类型提示
 
 import torch  # 导入PyTorch主库
 from PIL import Image, ImageFile  # 导入PIL用于图像处理
@@ -15,6 +16,7 @@ from torch.utils.data import Dataset  # 导入PyTorch的数据集基类
 from torchvision import transforms  # 导入torchvision的变换模块
 from torchvision.transforms import functional as F  # 导入变换的函数式接口
 from torchvision.transforms import InterpolationMode  # 导入插值模式
+from .textcrop import texture_crop # 导入纹理裁剪函数
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True  # 允许加载截断的图片，防止因图片损坏报错
 
@@ -105,6 +107,47 @@ class RandomMask(object):
         return tensor * mask.expand_as(tensor)  # 应用mask并返回
 
 
+class TextureCrop:
+    """
+    一个封装了texture_crop功能的变换类，可用于torchvision.transforms.Compose。
+    它会从texture_crop返回的多个图块中选择一个。
+    """
+    def __init__(self, window_size, stride=None, metric='ghe', position='top', n=10, random_choice=True):
+        self.window_size = window_size
+        self.stride = stride if stride is not None else window_size
+        self.metric = metric
+        self.position = position
+        self.n = n
+        self.random_choice = random_choice
+
+    def __call__(self, image):
+        """
+        Args:
+            image (PIL Image): 输入图像。
+        Returns:
+            PIL Image: 经过纹理裁剪后选择的图块。
+        """
+        # 调用核心函数获取一组高纹理图块
+        texture_images = texture_crop(
+            image,
+            stride=self.stride,
+            window_size=self.window_size,
+            metric=self.metric,
+            position=self.position,
+            n=self.n
+        )
+        
+        # 如果没有找到符合条件的图块，则使用中心裁剪作为备选方案
+        if not texture_images:
+            return transforms.CenterCrop(self.window_size)(image)
+        
+        # 根据设置，随机选择一个或选择第一个（最符合条件的）
+        if self.random_choice:
+            return random.choice(texture_images)
+        else:
+            return texture_images[0]
+
+
 def Get_Transforms(args):
     # 根据参数生成训练和评估的变换流程
 
@@ -135,6 +178,15 @@ def Get_Transforms(args):
             ],
             'eval': [
                 transforms.CenterCrop([size, size]),  # 居中裁剪
+            ],
+        },
+
+        'texture': {
+            'train': [
+                TextureCrop(window_size=size, random_choice=True, n=10),  # 训练时，从top-10中随机选一个
+            ],
+            'eval': [
+                TextureCrop(window_size=size, random_choice=False, n=1), # 评估时，确定性地选择top-1
             ],
         },
 
