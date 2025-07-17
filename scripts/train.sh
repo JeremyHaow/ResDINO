@@ -19,9 +19,7 @@ eval_datasets=(
     "/home/jqsj/hqs/data/dataset/train_ForenSynths/val"
 )
 
-MODEL="DINOv2"
-RESUME_PATH="./results/DINOv2/Wavelet_driven_Fusion_Network_20250627_180442"
-CHECKPOINT_FILE="checkpoint-29.pth"
+MODEL="SAFE"
 
 for train_dataset in "${train_datasets[@]}" 
 do
@@ -29,13 +27,13 @@ do
     do
 
         current_time=$(date +"%Y%m%d_%H%M%S")
-        RUN_NAME="Wavelet_driven_Fusion_Network_${current_time}"
+        RUN_NAME="SAFE_add_EMA_use_texture${current_time}"
         OUTPUT_PATH="results/$MODEL/$RUN_NAME"
         mkdir -p $OUTPUT_PATH
 
         torchrun $DISTRIBUTED_ARGS main_finetune.py \
             --input_size 224 \
-            --transform_mode 'crop' \
+            --transform_mode 'texture' \
             --model $MODEL \
             --data_path "$train_dataset" \
             --eval_data_path "$eval_dataset" \
@@ -44,12 +42,11 @@ do
             --blr 1e-3 \
             --weight_decay 0.01 \
             --warmup_epochs 2 \
-            --epochs 50 \
+            --epochs 30 \
             --num_workers 16 \
             --output_dir $OUTPUT_PATH \
-            --resume "$RESUME_PATH/$CHECKPOINT_FILE" \
             --use_swanlab \
-            --project_name "DINO_RESNET_EMA" \
+            --project_name "RESNET_EMA" \
             --run_name "$RUN_NAME" \
         2>&1 | tee -a $OUTPUT_PATH/log_train.txt
 

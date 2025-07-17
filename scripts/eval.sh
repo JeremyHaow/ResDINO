@@ -12,8 +12,8 @@ DISTRIBUTED_ARGS="
     --master_port $MASTER_PORT
 "
 
-MODEL="DINOv2"
-RESUME_PATH="./results/DINOv2/Wavelet_driven_Fusion_Network_20250628_183733"
+MODEL="SAFE"
+RESUME_PATH="./results/SAFE/SAFE_add_EMA_use_texture20250716_161453"
 CHECKPOINT_FILE="checkpoint-best.pth"
 
 eval_datasets=(
@@ -28,7 +28,7 @@ do
 
     torchrun $DISTRIBUTED_ARGS main_finetune.py \
         --input_size 224 \
-        --transform_mode 'crop' \
+        --transform_mode 'texture' \
         --model $MODEL \
         --eval_data_path "$eval_dataset" \
         --batch_size 256 \
@@ -36,7 +36,7 @@ do
         --output_dir "$RESUME_PATH/eval_results" \
         --resume "$RESUME_PATH/$CHECKPOINT_FILE" \
         --use_swanlab \
-        --project_name "DINO_RESNET_EMA" \
+        --project_name "SAFE_RESNET_EMA_texture" \
         --run_name "eval_${CHECKPOINT_NAME}_${DATASET_NAME}" \
         --eval True
 done

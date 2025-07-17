@@ -7,6 +7,7 @@ from skimage.filters.rank import entropy
 from skimage.morphology import disk
 import torch
 from torchvision.transforms import CenterCrop
+from torchvision import transforms
 
 ############################################################### TEXTURE CROP ###############################################################
 
@@ -40,6 +41,7 @@ def texture_crop(image, stride=224, window_size=224, metric='he', position='top'
     images = []
 
     # 1. 使用滑动窗口裁剪图像
+    x, y = 0, 0
     for y in range(0, image.height - window_size + 1, stride):
         for x in range(0, image.width - window_size + 1, stride):
             cropped_images.append(image.crop((x, y, x + window_size, y + window_size)))
@@ -238,3 +240,43 @@ def threshold_texture_crop(image, stride=224, window_size=224, threshold=5, drop
         texture_images = [CenterCrop(image.size)(image)]
 
     return texture_images
+
+class TextureCrop:
+    """
+    一个封装了texture_crop功能的变换类，可用于torchvision.transforms.Compose。
+    它会从texture_crop返回的多个图块中选择一个。
+    """
+    def __init__(self, window_size, stride=32, metric='ghe', position='top', n=10, random_choice=True):
+        self.window_size = window_size
+        self.stride = stride if stride is not None else window_size
+        self.metric = metric
+        self.position = position
+        self.n = n
+        self.random_choice = random_choice
+
+    def __call__(self, image):
+        """
+        Args:
+            image (PIL Image): 输入图像。
+        Returns:
+            PIL Image: 经过纹理裁剪后选择的图块。
+        """
+        # 调用核心函数获取一组高纹理图块
+        texture_images = texture_crop(
+            image,
+            stride=self.stride,
+            window_size=self.window_size,
+            metric=self.metric,
+            position=self.position,
+            n=self.n
+        )
+        
+        # 如果没有找到符合条件的图块，则使用中心裁剪作为备选方案
+        if not texture_images:
+            return transforms.CenterCrop(self.window_size)(image)
+        
+        # 根据设置，随机选择一个或选择第一个（最符合条件的）
+        if self.random_choice:
+            return random.choice(texture_images)
+        else:
+            return texture_images[0]

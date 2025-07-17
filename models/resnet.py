@@ -1,9 +1,12 @@
 import os, sys, pdb
+import kornia
 import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 from torch.nn import functional as F
-from pytorch_wavelets import DWTForward
+from torchvision import transforms
+from typing import Any, cast, Dict, List, Optional, Union
+import numpy as np
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152']
@@ -28,6 +31,35 @@ def conv1x1(in_planes, out_planes, stride=1):
     """1x1 convolution"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
+class EMA(nn.Module):
+    def __init__(self, channels, factor=8):
+        super(EMA, self).__init__()
+        self.groups = factor
+        assert channels // self.groups > 0
+        self.softmax = nn.Softmax(-1)
+        self.agp = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)
+        self.conv1x1 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=1, stride=1, padding=0)
+        self.conv3x3 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        group_x = x.reshape(b * self.groups, -1, h, w)  # b*g,c//g,h,w
+        x_h = self.pool_h(group_x)
+        x_w = self.pool_w(group_x).permute(0, 1, 3, 2)
+        hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))
+        x_h, x_w = torch.split(hw, [h, w], dim=2)
+        x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
+        x2 = self.conv3x3(group_x)
+        x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        x12 = x2.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        x22 = x1.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
+        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
+    
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -101,27 +133,24 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, num_classes=2, zero_init_residual=False, in_channels=3):
+    def __init__(self, block, layers, num_classes=2, zero_init_residual=False):
         super(ResNet, self).__init__()
 
+        self.unfoldSize = 2
+        self.unfoldIndex = 0
+        assert self.unfoldSize > 1
+        assert -1 < self.unfoldIndex and self.unfoldIndex < self.unfoldSize*self.unfoldSize
         self.inplanes = 64
-        
-        # ==================== 关键修改 1 ====================
-        # 计算DWT变换后的总通道数。
-        # 对于每个输入通道(R,G,B)，DWT会产生4个子带 (LL, LH, HL, HH)。
-        # 因此，总通道数 = in_channels * 4
-        # 对于RGB图像(in_channels=3)，输出将是 3*4 = 12 个通道。
-        dwt_channels = in_channels * 4
-
-        # 修改第一个卷积层，使其接受DWT变换后的12通道输入。
-        self.conv1 = nn.Conv2d(dwt_channels, 64, kernel_size=3, stride=2, padding=1, bias=False)
-        # ====================================================
-
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64 , layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+
+        # EMA注意力机制 - 在layer2之后插入
+        self.ema = EMA(channels=128 * block.expansion)
+
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc1 = nn.Linear(512, num_classes)
 
@@ -156,36 +185,18 @@ class ResNet(nn.Module):
             layers.append(block(self.inplanes, planes))
         return nn.Sequential(*layers)
 
-    # ==================== 关键修改 2 ====================
     def _preprocess_dwt(self, x, mode='symmetric', wave='bior1.3'):
-        """
-        执行DWT变换，并返回包含LL, LH, HL, HH所有四个分量的组合张量。
-        """
+        '''
+        pip install pywavelets pytorch_wavelets
+        '''
+        from pytorch_wavelets import DWTForward, DWTInverse
         DWT_filter = DWTForward(J=1, mode=mode, wave=wave).to(x.device)
-        Yl, Yh = DWT_filter(x) # Yl是LL分量, Yh是包含LH,HL,HH的列表
-
-        # Yl (LL) shape: [batch, in_channels, H/2, W/2]
-        # Yh[0] (details) shape: [batch, in_channels, 3, H/2, W/2] (3代表LH,HL,HH)
-
-        # 获取形状信息
-        b, c, h_half, w_half = Yl.shape
-        
-        # 将Yh的细节分量从[b,c,3,h,w]重排为[b,c*3,h,w]，以便与LL拼接
-        # permute(0,2,1,3,4) -> [b,3,c,h,w]
-        # reshape(b, c*3, ...) -> [b, 9, h, w] (假设c=3)
-        Yh_details = Yh[0].permute(0, 2, 1, 3, 4).reshape(b, c * 3, h_half, w_half)
-
-        # 沿着通道维度将LL分量和细节分量拼接起来
-        # 对于RGB输入, Yl(3通道) + Yh_details(9通道) = 12通道
-        combined_coeffs = torch.cat([Yl, Yh_details], dim=1)
-        
-        return combined_coeffs
-    # ====================================================
+        Yl, Yh = DWT_filter(x)
+        return transforms.Resize([x.shape[-2], x.shape[-1]])(Yh[0][:, :, 2, :, :])
 
     def forward(self, x):
-        
-        # 预处理步骤现在返回的是12通道的DWT系数张量
-        x = self._preprocess_dwt(x)
+
+        x = 1 * self._preprocess_dwt(x)
 
         x = self.conv1(x)
         x = self.bn1(x)
@@ -194,6 +205,9 @@ class ResNet(nn.Module):
 
         x = self.layer1(x)
         x = self.layer2(x)
+
+        # 应用EMA注意力机制
+        x = self.ema(x)
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
@@ -230,10 +244,8 @@ def resnet50(pretrained=False, **kwargs):
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
-    # 注意: 预训练权重是为ImageNet的RGB图像设计的，
-    # 而我们的模型现在处理的是12通道的DWT系数，
-    # 因此无法直接加载标准的ResNet50权重到conv1层。
-    # 需要从头开始训练或寻找在DWT系数上预训练的模型。
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet50']))
     return model
 
 

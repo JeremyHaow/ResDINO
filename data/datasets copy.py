@@ -8,6 +8,7 @@
 import io, os, pdb  # 导入io用于内存流操作，os用于文件操作，pdb用于调试
 import cv2, math, random  # 导入cv2用于图像处理，math用于数学运算，random用于随机数生成
 import numpy as np  # 导入numpy用于数值计算
+from typing import Union, Tuple # 导入类型提示
 
 import torch  # 导入PyTorch主库
 from PIL import Image, ImageFile  # 导入PIL用于图像处理
@@ -15,7 +16,7 @@ from torch.utils.data import Dataset  # 导入PyTorch的数据集基类
 from torchvision import transforms  # 导入torchvision的变换模块
 from torchvision.transforms import functional as F  # 导入变换的函数式接口
 from torchvision.transforms import InterpolationMode  # 导入插值模式
-from .textcrop import TextureCrop
+from .textcrop import texture_crop # 导入纹理裁剪函数
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True  # 允许加载截断的图片，防止因图片损坏报错
 
@@ -106,45 +107,77 @@ class RandomMask(object):
         return tensor * mask.expand_as(tensor)  # 应用mask并返回
 
 
+class TextureCrop:
+    """
+    一个封装了texture_crop功能的变换类，可用于torchvision.transforms.Compose。
+    它会从texture_crop返回的多个图块中选择一个。
+    """
+    def __init__(self, window_size, stride=None, metric='ghe', position='top', n=10, random_choice=True):
+        self.window_size = window_size
+        self.stride = stride if stride is not None else window_size
+        self.metric = metric
+        self.position = position
+        self.n = n
+        self.random_choice = random_choice
+
+    def __call__(self, image):
+        """
+        Args:
+            image (PIL Image): 输入图像。
+        Returns:
+            PIL Image: 经过纹理裁剪后选择的图块。
+        """
+        # 调用核心函数获取一组高纹理图块
+        texture_images = texture_crop(
+            image,
+            stride=self.stride,
+            window_size=self.window_size,
+            metric=self.metric,
+            position=self.position,
+            n=self.n
+        )
+        
+        # 如果没有找到符合条件的图块，则使用中心裁剪作为备选方案
+        if not texture_images:
+            return transforms.CenterCrop(self.window_size)(image)
+        
+        # 根据设置，随机选择一个或选择第一个（最符合条件的）
+        if self.random_choice:
+            return random.choice(texture_images)
+        else:
+            return texture_images[0]
+
+
 def Get_Transforms(args):
     # 根据参数生成训练和评估的变换流程
 
     size = args.input_size  # 输入图片的目标尺寸
 
     TRANSFORM_DICT = {
-        'resize_BILINEAR': {  # 使用双线性插值的resize方案
+        'resize_BILINEAR': {
             'train': [
-                transforms.RandomResizedCrop([size, size], interpolation=InterpolationMode.BILINEAR),  # 随机裁剪并缩放，插值方式为BILINEAR
+                transforms.RandomResizedCrop([size, size], interpolation=InterpolationMode.BILINEAR),  # 随机裁剪并缩放
             ],
             'eval': [
-                transforms.Resize([size, size], interpolation=InterpolationMode.BILINEAR),  # 直接缩放到目标尺寸，插值方式为BILINEAR
+                transforms.Resize([size, size], interpolation=InterpolationMode.BILINEAR),  # 直接缩放
             ],
         },
 
-        'resize_NEAREST': {  # 使用最近邻插值的resize方案
+        'resize_NEAREST': {
             'train': [
-                transforms.RandomResizedCrop([size, size], interpolation=InterpolationMode.NEAREST),  # 随机裁剪并缩放，插值方式为NEAREST
+                transforms.RandomResizedCrop([size, size], interpolation=InterpolationMode.NEAREST),
             ],
             'eval': [
-                transforms.Resize([size, size], interpolation=InterpolationMode.NEAREST),  # 直接缩放到目标尺寸，插值方式为NEAREST
+                transforms.Resize([size, size], interpolation=InterpolationMode.NEAREST),
             ],
         },
 
-        'crop': {  # 只做裁剪，不做缩放
+        'crop': {
             'train': [
-                transforms.RandomCrop([size, size], pad_if_needed=True),  # 随机裁剪到目标尺寸，必要时自动填充
+                transforms.RandomCrop([size, size], pad_if_needed=True),  # 随机裁剪，必要时填充
             ],
             'eval': [
-                transforms.CenterCrop([size, size]),  # 居中裁剪到目标尺寸
-            ],
-        },
-
-        'source': {  # 只做裁剪，评估阶段不做任何变换
-            'train': [
-                transforms.RandomCrop([size, size], pad_if_needed=True),  # 随机裁剪到目标尺寸，必要时自动填充
-            ],
-            'eval': [
-                # 评估阶段不做变换
+                transforms.CenterCrop([size, size]),  # 居中裁剪
             ],
         },
 
@@ -154,6 +187,14 @@ def Get_Transforms(args):
             ],
             'eval': [
                 TextureCrop(window_size=size, random_choice=False, n=1), # 评估时，确定性地选择top-1
+            ],
+        },
+
+        'source': {
+            'train': [
+                transforms.RandomCrop([size, size], pad_if_needed=True),
+            ],
+            'eval': [
             ],
         },
     }
@@ -182,7 +223,15 @@ def Get_Transforms(args):
         transform_eval.append(RandomMask(ratio=args.mask_ratio, patch_size=args.mask_patch_size, p=1.0))  # 测试时可加遮挡
     # endregion
 
-    return transforms.Compose(transform_train), transforms.Compose(transform_eval)  # 返回组合后的变换
+    # --- DINO Transform (minimal augmentation) ---
+    dino_norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transform_dino = transforms.Compose([
+        transforms.Resize([size, size], interpolation=InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        dino_norm,
+    ])
+
+    return transforms.Compose(transform_train), transforms.Compose(transform_eval), transform_dino
 
 
 class TrainDataset(Dataset):
@@ -192,8 +241,8 @@ class TrainDataset(Dataset):
         # is_train: 是否为训练集
         # args: 参数对象
 
-        TRANSFORM = Get_Transforms(args)  # 获取变换
-        self.transform = TRANSFORM[0] if is_train else TRANSFORM[1]  # 选择训练或评估变换
+        transform_train, transform_eval, self.transform_dino = Get_Transforms(args)
+        self.transform = transform_train if is_train else transform_eval
         root = args.data_path if is_train else args.eval_data_path  # 数据路径
 
         dataset_list = root.replace(' ', '').split(',')  # 支持多个数据集路径
@@ -246,6 +295,8 @@ class TrainDataset(Dataset):
         sample = self.data_list[index]
         image_path, targets = sample['image_path'], sample['label']
         image = Image.open(image_path).convert('RGB')  # 打开图片并转为RGB
-        image = self.transform(image)  # 应用变换
 
-        return image, torch.tensor(int(targets))  # 返回图片张量和标签
+        image_aug = self.transform(image)      # For ResNet branch
+        image_dino = self.transform_dino(image) # For DINO branch
+
+        return (image_aug, image_dino), torch.tensor(int(targets))  # 返回图片张量和标签
