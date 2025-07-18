@@ -32,7 +32,7 @@ do
         mkdir -p $OUTPUT_PATH
 
         torchrun $DISTRIBUTED_ARGS main_finetune.py \
-            --input_size 224 \
+            --input_size 256 \
             --transform_mode 'texture' \
             --model $MODEL \
             --data_path "$train_dataset" \
@@ -40,7 +40,7 @@ do
             --save_ckpt_freq 5 \
             --batch_size 32 \
             --blr 1e-3 \
-            --weight_decay 0.01 \
+            --weight_decay 0.05 \
             --warmup_epochs 2 \
             --epochs 30 \
             --num_workers 16 \

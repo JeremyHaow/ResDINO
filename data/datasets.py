@@ -150,7 +150,7 @@ def Get_Transforms(args):
 
         'texture': {
             'train': [
-                TextureCrop(window_size=size, random_choice=True, n=10),  # 训练时，从top-10中随机选一个
+                TextureCrop(window_size=size, random_choice=True, n=5),  # 训练时，从top-10中随机选一个
             ],
             'eval': [
                 TextureCrop(window_size=size, random_choice=False, n=1), # 评估时，确定性地选择top-1

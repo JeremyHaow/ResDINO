@@ -13,8 +13,8 @@ DISTRIBUTED_ARGS="
 "
 
 MODEL="SAFE"
-RESUME_PATH="./results/SAFE/SAFE_add_EMA_use_texture20250716_161453"
-CHECKPOINT_FILE="checkpoint-best.pth"
+RESUME_PATH="./results/SAFE/SAFE_add_EMA_use_texture20250717_175750"
+CHECKPOINT_FILE="checkpoint-19.pth"
 
 eval_datasets=(
     "/home/jqsj/hqs/data/dataset/UniversalFakeDetect/test" \
@@ -27,8 +27,8 @@ do
     CHECKPOINT_NAME=$(basename "$CHECKPOINT_FILE" .pth)
 
     torchrun $DISTRIBUTED_ARGS main_finetune.py \
-        --input_size 224 \
-        --transform_mode 'texture' \
+        --input_size 256 \
+        --transform_mode 'crop' \
         --model $MODEL \
         --eval_data_path "$eval_dataset" \
         --batch_size 256 \

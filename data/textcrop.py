@@ -246,7 +246,7 @@ class TextureCrop:
     一个封装了texture_crop功能的变换类，可用于torchvision.transforms.Compose。
     它会从texture_crop返回的多个图块中选择一个。
     """
-    def __init__(self, window_size, stride=32, metric='ghe', position='top', n=10, random_choice=True):
+    def __init__(self, window_size, stride=256, metric='ghe', position='top', n=5, random_choice=True):
         self.window_size = window_size
         self.stride = stride if stride is not None else window_size
         self.metric = metric
